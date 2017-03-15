@@ -15,6 +15,7 @@
 package extension
 
 import (
+	"github.com/google/trillian/crypto"
 	"github.com/google/trillian/storage"
 )
 
@@ -23,11 +24,12 @@ import (
 // implementation.
 type Registry interface {
 
-	// GetLogStorage returns a configured storage.LogStorage instance for the specified tree ID or an
-	// error if the storage cannot be set up.
+	// GetLogStorage returns a configured storage.LogStorage instance or an error if the storage cannot be set up.
 	GetLogStorage() (storage.LogStorage, error)
 
-	// GetMapStorage returns a configured storage.MapStorage instance for the specified tree ID or an
-	// error if the storage cannot be set up.
+	// GetMapStorage returns a configured storage.MapStorage instance or an error if the storage cannot be set up.
 	GetMapStorage() (storage.MapStorage, error)
+
+	// GetSigner returns a configured crypto.Signer instance for the specified tree ID or an error if the signer cannot be set up.
+	GetSigner(treeID int64) (*crypto.Signer, error)
 }

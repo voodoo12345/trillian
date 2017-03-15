@@ -7,7 +7,7 @@ echo "Building code"
 go build ${GOFLAGS} ./server/vmap/trillian_map_server/
 
 TEST_TREE_ID=123
-RPC_PORT=34556
+RPC_PORT=$(pickUnusedPort)
 
 echo "Provisioning test map (Tree ID: $TEST_TREE_ID) in database"
 yes | "${SCRIPTS_DIR}"/resetdb.sh
@@ -26,7 +26,7 @@ waitForServerStartup ${RPC_PORT}
 # Run the test(s):
 cd "${INTEGRATION_DIR}"
 set +e
-go test -run ".*Map.*" --timeout=5m ./ --map_id ${TEST_TREE_ID} --map_rpc_server="localhost:${RPC_PORT}"
+go test -run ".*LiveMap.*" --timeout=5m ./ --map_id ${TEST_TREE_ID} --map_rpc_server="localhost:${RPC_PORT}"
 RESULT=$?
 set -e
 

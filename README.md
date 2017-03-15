@@ -68,19 +68,11 @@ get -d -v -t ./...`).
 
 ### Building
 
-If you're not with the Go program of working within its
-[own directory tree](https://golang.org/cmd/go/#hdr-GOPATH_environment_variable), then:
-
 ```console
-% cd <your favorite directory for git repos>
-% git clone https://github.com/google/trillian.git
-% ln -s `pwd`/trillian $GOPATH/src/github.com/google  # you may have to make this directory first
-% cd trillian
-% go get -d -v -t ./...
-% go build ./...
+% go get -u -v -t github.com/google/trillian
+% cd $GOPATH/src/github.com/google/trillian
+% go test ./...
 ```
-
-If you are with the Go program, then you know what to do.
 
 ### Rebuilding Generated Code
 
@@ -102,7 +94,12 @@ the original files; if you do, run the following command:
 You'll need to have the following tools installed to do this:
 
   - `mockgen` tool from https://github.com/golang/mock
-  - `protoc` and the Go protoc extension (see documentation linked from the [protobuf site](https://github.com/google/protobuf)).
+  - `protoc` and the Go protoc extension (see documentation linked from the
+    [protobuf site](https://github.com/google/protobuf))
+       - You also need the `.proto` files from the
+         [google/rpc](https://github.com/googleapis/googleapis/tree/master/google/rpc)
+         directory of the [googleapis](https://github.com/googleapis/googleapis)
+         project to be installed somewhere in `protoc`'s search path.
 
 ### MySQL Setup
 
@@ -125,18 +122,14 @@ Are you sure? y
 ### Unit Tests
 
 Assuming MySQL is running locally, the following command runs all of the unit
-tests for the code, and should complete successfully:
+tests for the code (plus various lint-like checks), and should complete successfully:
 
-```
+```console
 go get -u github.com/client9/misspell/cmd/misspell
 go get -u github.com/fzipp/gocyclo
 go get -u github.com/gordonklaus/ineffassign
 go get -u github.com/golang/lint/golint
 ./scripts/presubmit.sh
-```
-
-```console
-% go test -v ./...
 ```
 
 ### Integration Test
@@ -148,8 +141,17 @@ functionality, which can be run with:
 % ./integration/integration_test.sh
 ```
 
-This test starts a Trillian server in Map mode, sets various key:value
-pairs and checks they can be retrieved.
+This runs several multi-process tests:
+
+ - A [test](integration/map_integration_test.go) that starts a Trillian server
+   in Map mode, sets various key:value pairs and checks they can be retrieved.
+ - A [test](integration/log_integration_test.go) that starts a Trillian server
+   in Log mode, together with a signer, logs many leaves, and checks they are
+   integrated correctly.
+ - A [test](integration/ct_integration_test.go) that starts a set of Trillian
+   servers in Log mode, plus a signer and a set of Certificate Transparency
+   personality servers, then runs tests that exercise all of the
+   [RFC6962 entrypoints](https://tools.ietf.org/html/rfc6962#section-4).
 
 
 Design

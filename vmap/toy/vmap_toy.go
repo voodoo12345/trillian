@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -10,7 +24,7 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto"
+	spb "github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/mysql"
@@ -27,16 +41,17 @@ func main() {
 
 	db, err := mysql.OpenDB(*mySQLURIFlag)
 	if err != nil {
-		glog.Fatalf("Failed to open DB connection: %v", err)
+		glog.Exitf("Failed to open DB connection: %v", err)
 	}
 
 	mapID := int64(1)
-	ms, err := mysql.NewMapStorage(db)
-	if err != nil {
-		glog.Fatalf("Failed create MapStorage: %v", err)
-	}
+	ms := mysql.NewMapStorage(db)
 
-	hasher := merkle.NewMapHasher(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
+	h, err := merkle.Factory(merkle.RFC6962SHA256Type)
+	if err != nil {
+		glog.Exitf("Could not find hasher: %v", err)
+	}
+	hasher := merkle.NewMapHasher(h)
 
 	testVecs := []struct {
 		batchSize       int
@@ -68,16 +83,17 @@ func main() {
 
 	var root []byte
 	for x := 0; x < numBatches; x++ {
-		tx, err := ms.Begin(ctx, mapID)
+		tx, err := ms.BeginForTree(ctx, mapID)
 		if err != nil {
-			glog.Fatalf("Failed to Begin() a new tx: %v", err)
+			glog.Exitf("Failed to Begin() a new tx: %v", err)
 		}
+		defer tx.Close()
 		w, err := merkle.NewSparseMerkleTreeWriter(tx.WriteRevision(), hasher,
 			func() (storage.TreeTX, error) {
-				return ms.Begin(ctx, mapID)
+				return ms.BeginForTree(ctx, mapID)
 			})
 		if err != nil {
-			glog.Fatalf("Failed to create new SMTWriter: %v", err)
+			glog.Exitf("Failed to create new SMTWriter: %v", err)
 		}
 
 		glog.Infof("Starting batch %d...", x)
@@ -90,14 +106,14 @@ func main() {
 
 		glog.Info("SetLeaves...")
 		if err := w.SetLeaves(h); err != nil {
-			glog.Fatalf("Failed to batch %d: %v", x, err)
+			glog.Exitf("Failed to batch %d: %v", x, err)
 		}
 		glog.Info("SetLeaves done.")
 
 		glog.Info("CalculateRoot...")
 		root, err = w.CalculateRoot()
 		if err != nil {
-			glog.Fatalf("Failed to calculate root hash: %v", err)
+			glog.Exitf("Failed to calculate root hash: %v", err)
 		}
 		glog.Infof("CalculateRoot (%d), root: %s", x, base64.StdEncoding.EncodeToString(root))
 
@@ -106,19 +122,18 @@ func main() {
 			RootHash:       root,
 			MapId:          mapID,
 			MapRevision:    tx.WriteRevision(),
-			Signature:      &trillian.DigitallySigned{},
+			Signature:      &spb.DigitallySigned{},
 		}); err != nil {
-			glog.Fatalf("Failed to store SMH: %v", err)
+			glog.Exitf("Failed to store SMH: %v", err)
 		}
 
-		err = tx.Commit()
-		if err != nil {
-			glog.Fatalf("Failed to Commit() tx: %v", err)
+		if err := tx.Commit(); err != nil {
+			glog.Exitf("Failed to Commit() tx: %v", err)
 		}
 	}
 
 	if expected, got := testonly.MustDecodeBase64(expectedRootB64), root; !bytes.Equal(expected, root) {
-		glog.Fatalf("Expected root %s, got root: %s", base64.StdEncoding.EncodeToString(expected), base64.StdEncoding.EncodeToString(got))
+		glog.Exitf("Expected root %s, got root: %s", base64.StdEncoding.EncodeToString(expected), base64.StdEncoding.EncodeToString(got))
 	}
 	glog.Infof("Finished, root: %s", base64.StdEncoding.EncodeToString(root))
 

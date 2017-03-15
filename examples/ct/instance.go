@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package ct
 
 import (
@@ -10,6 +24,7 @@ import (
 
 	"github.com/google/trillian"
 	"github.com/google/trillian/crypto"
+	"github.com/google/trillian/crypto/keys"
 	"github.com/google/trillian/util"
 )
 
@@ -84,28 +99,16 @@ func (cfg LogConfig) SetUpInstance(client trillian.TrillianLogClient, deadline t
 		return nil, fmt.Errorf("failed to read trusted roots: %v", err)
 	}
 
-	// Set up a key manager instance for this log.
-	km := crypto.NewPEMKeyManager()
-	privData, err := ioutil.ReadFile(cfg.PrivKeyPEMFile)
+	// Load the private key for this log.
+	key, err := keys.NewFromPrivatePEMFile(cfg.PrivKeyPEMFile, cfg.PrivKeyPassword)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load private key file: %v", err)
+		return nil, fmt.Errorf("failed to load private key: %v", err)
 	}
 
-	if err := km.LoadPrivateKey(string(privData), cfg.PrivKeyPassword); err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %v", err)
-	}
-
-	pubData, err := ioutil.ReadFile(cfg.PubKeyPEMFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load public key file: %v", err)
-	}
-
-	if err := km.LoadPublicKey(string(pubData)); err != nil {
-		return nil, fmt.Errorf("failed to parse public key: %v", err)
-	}
+	signer := crypto.NewSigner(key)
 
 	// Create and register the handlers using the RPC client we just set up
-	ctx := NewLogContext(cfg.LogID, cfg.Prefix, roots, client, km, deadline, new(util.SystemTimeSource))
+	ctx := NewLogContext(cfg.LogID, cfg.Prefix, roots, client, signer, deadline, new(util.SystemTimeSource))
 	logVars.Set(cfg.Prefix, ctx.exp.vars)
 
 	handlers := ctx.Handlers(cfg.Prefix)

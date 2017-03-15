@@ -1,9 +1,22 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package ct
 
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
 	"reflect"
 	"testing"
 
@@ -24,37 +37,31 @@ func TestSignV1SCTForCertificate(t *testing.T) {
 		t.Fatalf("failed to set up test cert: %v", err)
 	}
 
-	toSign, _ := hex.DecodeString("7052085a63895983fc768ebe0858891bcd4326e797ef3b7ed5996e7655afd7ab")
-	km := setupMockKeyManager(mockCtrl, toSign)
+	signer, err := setupSigner(fakeSignature)
+	if err != nil {
+		t.Fatalf("could not create signer: %v", err)
+	}
 
-	leaf, got, err := signV1SCTForCertificate(km, cert, nil, fixedTime)
+	leaf, got, err := signV1SCTForCertificate(signer, cert, nil, fixedTime)
 	if err != nil {
 		t.Fatalf("create sct for cert failed: %v", err)
 	}
 
-	logID, err := hex.DecodeString(ctMockLogID)
-	if err != nil {
-		t.Fatalf("failed to decode test log id: %s", ctMockLogID)
-	}
-
-	var idArray [sha256.Size]byte
-	copy(idArray[:], logID)
-
 	expected := ct.SignedCertificateTimestamp{
 		SCTVersion: 0,
-		LogID:      ct.LogID{KeyID: ct.SHA256Hash(idArray)},
+		LogID:      ct.LogID{KeyID: demoLogID},
 		Timestamp:  1504786523000,
 		Extensions: ct.CTExtensions{},
 		Signature: ct.DigitallySigned{
 			Algorithm: tls.SignatureAndHashAlgorithm{
 				Hash:      tls.SHA256,
 				Signature: tls.ECDSA},
-			Signature: []byte("signed"),
+			Signature: fakeSignature,
 		},
 	}
 
-	if !reflect.DeepEqual(got, expected) {
-		t.Fatalf("Mismatched SCT (cert), got %v, expected %v", got, expected)
+	if !reflect.DeepEqual(*got, expected) {
+		t.Fatalf("Mismatched SCT (cert), got \n%v, expected \n%v", got, expected)
 	}
 
 	// Additional checks that the MerkleTreeLeaf we built is correct
@@ -86,35 +93,30 @@ func TestSignV1SCTForPrecertificate(t *testing.T) {
 		t.Fatalf("failed to set up test precert: %v", err)
 	}
 
-	toSign, _ := hex.DecodeString("dfa541729551db7e37715c1d613dc1a0c72cd7efac2de9cfd718d27fc79c018f")
-	km := setupMockKeyManager(mockCtrl, toSign)
+	signer, err := setupSigner(fakeSignature)
+	if err != nil {
+		t.Fatalf("could not create signer: %v", err)
+	}
 
 	// Use the same cert as the issuer for convenience.
-	leaf, got, err := signV1SCTForPrecertificate(km, cert, cert, fixedTime)
+	leaf, got, err := signV1SCTForPrecertificate(signer, cert, cert, fixedTime)
 	if err != nil {
 		t.Fatalf("create sct for precert failed: %v", err)
 	}
 
-	logID, err := hex.DecodeString(ctMockLogID)
-	if err != nil {
-		t.Fatalf("failed to decode test log id: %s", ctMockLogID)
-	}
-
-	var idArray [sha256.Size]byte
-	copy(idArray[:], logID)
-
-	expected := ct.SignedCertificateTimestamp{SCTVersion: 0,
-		LogID:      ct.LogID{KeyID: ct.SHA256Hash(idArray)},
+	expected := ct.SignedCertificateTimestamp{
+		SCTVersion: 0,
+		LogID:      ct.LogID{KeyID: demoLogID},
 		Timestamp:  1504786523000,
 		Extensions: ct.CTExtensions{},
 		Signature: ct.DigitallySigned{
 			Algorithm: tls.SignatureAndHashAlgorithm{
 				Hash:      tls.SHA256,
 				Signature: tls.ECDSA},
-			Signature: []byte("signed")}}
+			Signature: fakeSignature}}
 
-	if !reflect.DeepEqual(got, expected) {
-		t.Fatalf("Mismatched SCT (precert), got %v, expected %v", got, expected)
+	if !reflect.DeepEqual(*got, expected) {
+		t.Fatalf("Mismatched SCT (precert), got \n%v, expected \n%v", got, expected)
 	}
 
 	// Additional checks that the MerkleTreeLeaf we built is correct

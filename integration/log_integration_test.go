@@ -15,11 +15,13 @@
 package integration
 
 import (
+	"context"
 	"flag"
 	"testing"
 	"time"
 
 	"github.com/google/trillian"
+	"github.com/google/trillian/testonly/integration"
 	"google.golang.org/grpc"
 )
 
@@ -37,7 +39,7 @@ var waitForSequencingFlag = flag.Duration("wait_for_sequencing", time.Second*60,
 var waitBetweenQueueChecksFlag = flag.Duration("queue_poll_wait", time.Second*5, "How frequently to check the queue while waiting")
 var rpcRequestDeadlineFlag = flag.Duration("rpc_deadline", time.Second*10, "Deadline to use for all RPC requests")
 
-func TestLogIntegration(t *testing.T) {
+func TestLiveLogIntegration(t *testing.T) {
 	flag.Parse()
 	if *treeIDFlag == -1 {
 		t.Skip("Log integration test skipped as no tree ID provided")
@@ -70,6 +72,27 @@ func TestLogIntegration(t *testing.T) {
 	defer conn.Close()
 
 	client := trillian.NewTrillianLogClient(conn)
+	if err := RunLogIntegration(client, params); err != nil {
+		t.Fatalf("Test failed: %v", err)
+	}
+}
+
+func TestInProcessLogIntegration(t *testing.T) {
+	ctx := context.Background()
+	const numSequencers = 2
+	env, err := integration.NewLogEnv(ctx, numSequencers, "TestInProcessLogIntegration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+
+	logID, err := env.CreateLog()
+	if err != nil {
+		t.Fatalf("Failed to create log: %v", err)
+	}
+
+	client := trillian.NewTrillianLogClient(env.ClientConn)
+	params := DefaultTestParameters(logID)
 	if err := RunLogIntegration(client, params); err != nil {
 		t.Fatalf("Test failed: %v", err)
 	}

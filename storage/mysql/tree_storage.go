@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package mysql
 
 import (
@@ -20,8 +34,8 @@ const (
 	insertTreeHeadSQL     = `INSERT INTO TreeHead(TreeId,TreeHeadTimestamp,TreeSize,RootHash,TreeRevision,RootSignature)
 		 VALUES(?,?,?,?,?,?)`
 	selectTreeRevisionAtSizeOrLargerSQL = "SELECT TreeRevision,TreeSize FROM TreeHead WHERE TreeId=? AND TreeSize>=? ORDER BY TreeRevision LIMIT 1"
-	selectActiveLogsSQL                 = "SELECT TreeId, KeyId from Trees where TreeType='LOG'"
-	selectActiveLogsWithUnsequencedSQL  = "SELECT DISTINCT t.TreeId, t.KeyId from Trees t INNER JOIN Unsequenced u WHERE TreeType='LOG' AND t.TreeId=u.TreeId"
+	selectActiveLogsSQL                 = "SELECT TreeId from Trees where TreeType='LOG'"
+	selectActiveLogsWithUnsequencedSQL  = "SELECT DISTINCT t.TreeId from Trees t INNER JOIN Unsequenced u WHERE TreeType='LOG' AND t.TreeId=u.TreeId"
 
 	selectSubtreeSQL = `
  SELECT x.SubtreeId, x.MaxRevision, Subtree.Nodes
@@ -86,30 +100,6 @@ func expandPlaceholderSQL(sql string, num int, first, rest string) string {
 	parameters := first + strings.Repeat(","+rest, num-1)
 
 	return strings.Replace(sql, placeholderSQL, parameters, 1)
-}
-
-// Node IDs are stored using proto serialization
-func decodeNodeID(nodeIDBytes []byte) (*storage.NodeID, error) {
-	var nodeIDProto storagepb.NodeIDProto
-
-	if err := proto.Unmarshal(nodeIDBytes, &nodeIDProto); err != nil {
-		glog.Warningf("Failed to decode nodeid: %s", err)
-		return nil, err
-	}
-
-	return storage.NewNodeIDFromProto(nodeIDProto), nil
-}
-
-func encodeNodeID(n storage.NodeID) ([]byte, error) {
-	nodeIDProto := n.AsProto()
-	marshalledBytes, err := proto.Marshal(nodeIDProto)
-
-	if err != nil {
-		glog.Warningf("Failed to encode nodeid: %s", err)
-		return nil, err
-	}
-
-	return marshalledBytes, nil
 }
 
 // getStmt creates and caches sql.Stmt structs based on the passed in statement
@@ -366,11 +356,17 @@ func (t *treeTX) SetMerkleNodes(nodes []storage.Node) error {
 
 func (t *treeTX) Commit() error {
 	if t.writeRevision > -1 {
-		t.subtreeCache.Flush(func(st []*storagepb.SubtreeProto) error { return t.storeSubtrees(st) })
+		if err := t.subtreeCache.Flush(func(st []*storagepb.SubtreeProto) error {
+			return t.storeSubtrees(st)
+		}); err != nil {
+			glog.Warningf("TX commit flush error: %v", err)
+			return err
+		}
 	}
 	t.closed = true
 	if err := t.tx.Commit(); err != nil {
 		glog.Warningf("TX commit error: %s", err)
+		return err
 	}
 	return nil
 }
@@ -379,10 +375,35 @@ func (t *treeTX) Rollback() error {
 	t.closed = true
 	if err := t.tx.Rollback(); err != nil {
 		glog.Warningf("TX rollback error: %s", err)
+		return err
+	}
+	return nil
+}
+
+func (t *treeTX) Close() error {
+	if !t.closed {
+		err := t.Rollback()
+		if err != nil {
+			glog.Warningf("Rollback error on Close(): %v", err)
+		}
+		return err
 	}
 	return nil
 }
 
 func (t *treeTX) IsOpen() bool {
 	return !t.closed
+}
+
+func checkDatabaseAccessible(ctx context.Context, db *sql.DB) error {
+	_ = ctx
+
+	stmt, err := db.Prepare("SELECT TreeId FROM Trees LIMIT 1")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec()
+	return err
 }

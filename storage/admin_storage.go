@@ -1,4 +1,4 @@
-// Copyright 2016 Google Inc. All Rights Reserved.
+// Copyright 2017 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -79,7 +79,7 @@ type AdminReader interface {
 	// ListTrees returns all trees in storage.
 	// Note that there's no authorization restriction on the trees returned,
 	// so it should be used with caution in production code.
-	ListTrees(ctx context.Context) ([]trillian.Tree, error)
+	ListTrees(ctx context.Context) ([]*trillian.Tree, error)
 }
 
 // AdminWriter provides a write-only interface for tree data.
@@ -91,4 +91,13 @@ type AdminWriter interface {
 	// Remaining fields must be set to valid values.
 	// Returns an error if the tree is invalid or creation fails.
 	CreateTree(ctx context.Context, tree *trillian.Tree) (*trillian.Tree, error)
+
+	// UpdateTree updates the specified tree in storage, returning a tree
+	// with all storage-generated fields set.
+	// updateFunc is called to perform the desired tree modifications. Refer
+	// to trillian.Tree for details on which fields are mutable and what is
+	// considered valid.
+	// Returns an error if the tree is invalid or the update cannot be
+	// performed.
+	UpdateTree(ctx context.Context, treeID int64, updateFunc func(*trillian.Tree)) (*trillian.Tree, error)
 }

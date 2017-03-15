@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package crypto
+package sigpb
 
-//go:generate mockgen -package crypto -destination mock_signer.go crypto Signer
-//go:generate mockgen -self_package github.com/google/trillian/crypto -package crypto -destination mock_key_manager.go github.com/google/trillian/crypto KeyManager
+//go:generate protoc -I=. --go_out=:. sigpb.proto

@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package mysql
 
 import (
@@ -8,89 +22,48 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sync/atomic"
 	"testing"
 
 	"github.com/golang/glog"
-	"github.com/google/trillian/crypto"
+	"github.com/google/trillian"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/storage"
+	storageto "github.com/google/trillian/storage/testonly"
+	"github.com/google/trillian/testonly"
 )
 
-// Parallel tests must get different log or map ids
-var testLogID int64
-var testMapID int64
-
-type logIDAndTest struct {
-	logID    int64
-	testName string
-}
-
-type mapIDAndTest struct {
-	mapID    int64
-	testName string
-}
-
-// Explicit test for node id conversion to / from protos.
-func TestNodeIDSerialization(t *testing.T) {
-	nodeID := storage.NodeID{Path: []byte("hello"), PrefixLenBits: 3, PathLenBits: 40}
-
-	serializedBytes, err := encodeNodeID(nodeID)
-	if err != nil {
-		t.Fatalf("Failed to serialize NodeID: %v, %v", nodeID, err)
-	}
-
-	nodeID2, err := decodeNodeID(serializedBytes)
-	if err != nil {
-		t.Fatalf("Failed to deserialize NodeID: %v, %v", nodeID, err)
-	}
-	if expected, got := nodeID.String(), nodeID2.String(); expected != got {
-		t.Errorf("Round trip of nodeID failed: %v %v", expected, got)
-	}
-}
-
 func TestNodeRoundTrip(t *testing.T) {
-	logID := createLogID("TestNodeRoundTrip")
-	prepareTestLogDB(DB, logID, t)
-	s := prepareTestLogStorage(DB, logID, t)
+	cleanTestDB(DB)
+	logID := createLogForTests(DB)
+	s := NewLogStorage(DB)
 
 	const writeRevision = int64(100)
-
-	nodesToStore := createSomeNodes("TestNodeRoundTrip", logID.logID)
+	nodesToStore := createSomeNodes()
 	nodeIDsToRead := make([]storage.NodeID, len(nodesToStore))
 	for i := range nodesToStore {
 		nodeIDsToRead[i] = nodesToStore[i].NodeID
 	}
 
-	ctx := context.Background()
-
 	{
-		tx, err := s.BeginForTree(ctx, logID.logID)
+		tx := beginLogTx(s, logID, t)
+		defer tx.Close()
 		forceWriteRevision(writeRevision, tx)
-		if err != nil {
-			t.Fatalf("Failed to Begin: %s", err)
-		}
 
 		// Need to read nodes before attempting to write
 		if _, err := tx.GetMerkleNodes(99, nodeIDsToRead); err != nil {
 			t.Fatalf("Failed to read nodes: %s", err)
 		}
-
 		if err := tx.SetMerkleNodes(nodesToStore); err != nil {
 			t.Fatalf("Failed to store nodes: %s", err)
 		}
-
 		if err := tx.Commit(); err != nil {
 			t.Fatalf("Failed to commit nodes: %s", err)
 		}
 	}
 
 	{
-		tx, err := s.BeginForTree(ctx, logID.logID)
-
-		if err != nil {
-			t.Fatalf("Failed to Begin: %s", err)
-		}
+		tx := beginLogTx(s, logID, t)
+		defer tx.Close()
 
 		readNodes, err := tx.GetMerkleNodes(100, nodeIDsToRead)
 		if err != nil {
@@ -99,57 +72,44 @@ func TestNodeRoundTrip(t *testing.T) {
 		if err := nodesAreEqual(readNodes, nodesToStore); err != nil {
 			t.Fatalf("Read back different nodes from the ones stored: %s", err)
 		}
-
-		if err := tx.Commit(); err != nil {
-			t.Fatalf("Failed to commit read: %s", err)
-		}
+		commit(tx, t)
 	}
 }
 
 // This test ensures that node writes cross subtree boundaries so this edge case in the subtree
 // cache gets exercised. Any tree size > 256 will do this.
 func TestLogNodeRoundTripMultiSubtree(t *testing.T) {
-	logID := createLogID("TestLogNodeRoundTripMultiSubtree")
-	prepareTestLogDB(DB, logID, t)
-	s := prepareTestLogStorage(DB, logID, t)
+	cleanTestDB(DB)
+	logID := createLogForTests(DB)
+	s := NewLogStorage(DB)
 
 	const writeRevision = int64(100)
-
 	nodesToStore := createLogNodesForTreeAtSize(871, writeRevision)
 	nodeIDsToRead := make([]storage.NodeID, len(nodesToStore))
 	for i := range nodesToStore {
 		nodeIDsToRead[i] = nodesToStore[i].NodeID
 	}
 
-	ctx := context.Background()
-
 	{
-		tx, err := s.BeginForTree(ctx, logID.logID)
+		tx := beginLogTx(s, logID, t)
+		defer tx.Close()
 		forceWriteRevision(writeRevision, tx)
-		if err != nil {
-			t.Fatalf("Failed to Begin: %s", err)
-		}
 
 		// Need to read nodes before attempting to write
 		if _, err := tx.GetMerkleNodes(writeRevision-1, nodeIDsToRead); err != nil {
 			t.Fatalf("Failed to read nodes: %s", err)
 		}
-
 		if err := tx.SetMerkleNodes(nodesToStore); err != nil {
 			t.Fatalf("Failed to store nodes: %s", err)
 		}
-
 		if err := tx.Commit(); err != nil {
 			t.Fatalf("Failed to commit nodes: %s", err)
 		}
 	}
 
 	{
-		tx, err := s.BeginForTree(ctx, logID.logID)
-
-		if err != nil {
-			t.Fatalf("Failed to Begin: %s", err)
-		}
+		tx := beginLogTx(s, logID, t)
+		defer tx.Close()
 
 		readNodes, err := tx.GetMerkleNodes(100, nodeIDsToRead)
 		if err != nil {
@@ -165,10 +125,7 @@ func TestLogNodeRoundTripMultiSubtree(t *testing.T) {
 			}
 			t.Fatalf("Read back different nodes from the ones stored: %s", err)
 		}
-
-		if err := tx.Commit(); err != nil {
-			t.Fatalf("Failed to commit read: %s", err)
-		}
+		commit(tx, t)
 	}
 }
 
@@ -180,25 +137,7 @@ func forceWriteRevision(rev int64, tx storage.TreeTX) {
 	mtx.treeTX.writeRevision = rev
 }
 
-func createLogID(testName string) logIDAndTest {
-	atomic.AddInt64(&testLogID, 1)
-
-	return logIDAndTest{
-		logID:    testLogID,
-		testName: testName,
-	}
-}
-
-func createMapID(testName string) mapIDAndTest {
-	atomic.AddInt64(&testMapID, 1)
-
-	return mapIDAndTest{
-		mapID:    testMapID,
-		testName: testName,
-	}
-}
-
-func createSomeNodes(testName string, treeID int64) []storage.Node {
+func createSomeNodes() []storage.Node {
 	r := make([]storage.Node, 4)
 	for i := range r {
 		r[i].NodeID = storage.NewNodeIDWithPrefix(uint64(i), 8, 8, 8)
@@ -210,7 +149,7 @@ func createSomeNodes(testName string, treeID int64) []storage.Node {
 }
 
 func createLogNodesForTreeAtSize(ts, rev int64) []storage.Node {
-	tree := merkle.NewCompactMerkleTree(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
+	tree := merkle.NewCompactMerkleTree(testonly.Hasher)
 	nodeMap := make(map[string]storage.Node)
 	for l := 0; l < int(ts); l++ {
 		// We're only interested in the side effects of adding leaves - the node updates
@@ -250,14 +189,6 @@ func nodesAreEqual(lhs []storage.Node, rhs []storage.Node) error {
 	return nil
 }
 
-func openTestDBOrDie() *sql.DB {
-	db, err := OpenDB("test:zaphod@tcp(127.0.0.1:3306)/test")
-	if err != nil {
-		panic(err)
-	}
-	return db
-}
-
 func diffNodes(got, want []storage.Node) ([]storage.Node, []storage.Node) {
 	missing := []storage.Node{}
 	gotMap := make(map[string]storage.Node)
@@ -279,68 +210,58 @@ func diffNodes(got, want []storage.Node) ([]storage.Node, []storage.Node) {
 	return missing, extra
 }
 
-// cleanTestDB deletes all the entries in the database. Only use this with a test database
-// TODO(gdbelvin): Migrate to testonly/integration
-func cleanTestDB(db *sql.DB) {
-	// Wipe out anything that was there for this log id
-	for _, table := range allTables {
-		_, err := db.Exec(fmt.Sprintf("DELETE FROM %s", table))
+func openTestDBOrDie() *sql.DB {
+	db, err := OpenDB("test:zaphod@tcp(127.0.0.1:3306)/test")
+	if err != nil {
+		panic(err)
+	}
+	return db
+}
 
-		if err != nil {
+// cleanTestDB deletes all the entries in the database.
+func cleanTestDB(db *sql.DB) {
+	for _, table := range allTables {
+		if _, err := db.Exec(fmt.Sprintf("DELETE FROM %s", table)); err != nil {
 			panic(fmt.Errorf("Failed to delete rows in %s: %s", table, err))
 		}
 	}
 }
 
-// TODO(codingllama): Migrate to Admin API
-func createTestDB(db *sql.DB) {
-	_, err := db.Exec(`REPLACE INTO Trees(TreeId, KeyId, TreeType, LeafHasherType, TreeHasherType)
-					 VALUES(23, "hi", "LOG", "SHA256", "SHA256")`)
+// createMapForTests creates a map-type tree for tests. Returns the treeID of the new tree.
+func createMapForTests(db *sql.DB) int64 {
+	tree, err := createTree(db, storageto.MapTree)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Error creating map: %v", err))
 	}
+	return tree.TreeId
 }
 
-// prepareTestTreeDB removes all database contents for the specified log id so tests run in a predictable environment. For obvious reasons this should only be allowed to run against test databases. This method panics if any of the deletions fails to make sure tests can't inadvertently succeed.
-// TODO(gdbelvin): Migrate to testonly/integration / create a new DB for freshness
-func prepareTestTreeDB(db *sql.DB, treeID int64, t *testing.T) {
-	// Wipe out anything that was there for this tree id
-	for _, table := range allTables {
-		_, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE TreeId=?", table), treeID)
-
-		if err != nil {
-			t.Fatalf("Failed to delete rows in %s for %d: %s", table, treeID, err)
-		}
+// createLogForTests creates a log-type tree for tests. Returns the treeID of the new tree.
+func createLogForTests(db *sql.DB) int64 {
+	tree, err := createTree(db, storageto.LogTree)
+	if err != nil {
+		panic(fmt.Sprintf("Error creating log: %v", err))
 	}
+	return tree.TreeId
 }
 
-// prepareTestLogDB removes all database contents for the specified log id so tests run in a predictable environment. For obvious reasons this should only be allowed to run against test databases. This method panics if any of the deletions fails to make sure tests can't inadvertently succeed.
-// TODO(codingllama): Migrate to Admin API
-func prepareTestLogDB(db *sql.DB, logID logIDAndTest, t *testing.T) {
-	prepareTestTreeDB(db, logID.logID, t)
-
-	// Now put back the tree row for this log id
-	_, err := db.Exec(`REPLACE INTO Trees(TreeId, KeyId, TreeType, LeafHasherType, TreeHasherType)
-					 VALUES(?, ?, "LOG", "SHA256", "SHA256")`, logID.logID, logID.logID)
-
+// createTree creates the specified tree using AdminStorage.
+func createTree(db *sql.DB, tree *trillian.Tree) (*trillian.Tree, error) {
+	s := NewAdminStorage(db)
+	ctx := context.Background()
+	tx, err := s.Begin(ctx)
 	if err != nil {
-		t.Fatalf("Failed to create tree entry for test: %v", err)
+		return nil, err
 	}
-
-}
-
-func prepareTestLogStorage(db *sql.DB, logID logIDAndTest, t *testing.T) storage.LogStorage {
-	if err := DeleteTree(logID.logID, db); err != nil {
-		t.Fatalf("Failed to delete log storage: %s", err)
-	}
-	if err := CreateTree(logID.logID, db); err != nil {
-		t.Fatalf("Failed to create new log storage: %s", err)
-	}
-	s, err := NewLogStorage(db)
+	defer tx.Close()
+	newTree, err := tx.CreateTree(ctx, tree)
 	if err != nil {
-		t.Fatalf("Failed to open log storage: %s", err)
+		return nil, err
 	}
-	return s
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return newTree, nil
 }
 
 // DB is the database used for tests. It's initialized and closed by TestMain().
@@ -351,7 +272,6 @@ func TestMain(m *testing.M) {
 	DB = openTestDBOrDie()
 	defer DB.Close()
 	cleanTestDB(DB)
-	createTestDB(DB)
 	ec := m.Run()
 	os.Exit(ec)
 }

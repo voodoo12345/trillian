@@ -32,6 +32,9 @@ type ReadOnlyLogTX interface {
 
 	// Rollback discards the read-only TX.
 	Rollback() error
+
+	// Close attempts to Rollback the TX if it's open, it's a noop otherwise.
+	Close() error
 }
 
 // ReadOnlyLogTreeTX provides a read-only view into the Log data.
@@ -59,6 +62,8 @@ type LogTreeTX interface {
 
 // ReadOnlyLogStorage represents a narrowed read-only view into a LogStorage.
 type ReadOnlyLogStorage interface {
+	DatabaseChecker
+
 	// Snapshot starts a read-only transaction not tied to any particular tree.
 	Snapshot(ctx context.Context) (ReadOnlyLogTX, error)
 
@@ -83,7 +88,7 @@ type LogStorage interface {
 // LeafQueuer provides a write-only interface for the queueing (but not necessarily integration) of leaves.
 type LeafQueuer interface {
 	// QueueLeaves enqueues leaves for later integration into the tree.
-	QueueLeaves(leaves []trillian.LogLeaf, queueTimestamp time.Time) error
+	QueueLeaves(leaves []*trillian.LogLeaf, queueTimestamp time.Time) error
 }
 
 // LeafDequeuer provides an interface for reading previously queued leaves for integration into the tree.
@@ -92,8 +97,8 @@ type LeafDequeuer interface {
 	// Leaves which have been dequeued within a Rolled-back Tx will become available for dequeing again.
 	// Leaves queued more recently than the cutoff time will not be returned. This allows for
 	// guard intervals to be configured.
-	DequeueLeaves(limit int, cutoffTime time.Time) ([]trillian.LogLeaf, error)
-	UpdateSequencedLeaves(leaves []trillian.LogLeaf) error
+	DequeueLeaves(limit int, cutoffTime time.Time) ([]*trillian.LogLeaf, error)
+	UpdateSequencedLeaves(leaves []*trillian.LogLeaf) error
 }
 
 // LeafReader provides a read only interface to stored tree leaves
@@ -102,12 +107,12 @@ type LeafReader interface {
 	// tree via sequencing.
 	GetSequencedLeafCount() (int64, error)
 	// GetLeavesByIndex returns leaf metadata and data for a set of specified sequenced leaf indexes.
-	GetLeavesByIndex(leaves []int64) ([]trillian.LogLeaf, error)
+	GetLeavesByIndex(leaves []int64) ([]*trillian.LogLeaf, error)
 	// GetLeavesByHash looks up sequenced leaf metadata and data by their Merkle leaf hash. If the
 	// tree permits duplicate leaves callers must be prepared to handle multiple results with the
 	// same hash but different sequence numbers. If orderBySequence is true then the returned data
 	// will be in ascending sequence number order.
-	GetLeavesByHash(leafHashes [][]byte, orderBySequence bool) ([]trillian.LogLeaf, error)
+	GetLeavesByHash(leafHashes [][]byte, orderBySequence bool) ([]*trillian.LogLeaf, error)
 }
 
 // LogRootReader provides an interface for reading SignedLogRoots.

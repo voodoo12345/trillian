@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package ct
 
 import (
@@ -84,21 +98,26 @@ func ValidateChain(rawChain [][]byte, trustedRoots PEMCertPool) ([]*x509.Certifi
 	// uses all the certs in the order they were submitted so as to comply with RFC 6962
 	// requirements detailed in Section 3.1.
 	for _, verifiedChain := range chains {
-		// The verified chain includes a root, which we don't need to include in the comparison
-		chainMinusRoot := verifiedChain[:len(verifiedChain)-1]
-
-		if len(chainMinusRoot) != len(chain) {
-			continue
+		if chainsEquivalent(chain, verifiedChain) {
+			return verifiedChain, nil
 		}
-
-		for i, certInChain := range chainMinusRoot {
-			if certInChain != chain[i] {
-				continue
-			}
-		}
-
-		return chainMinusRoot, nil
 	}
 
 	return nil, errors.New("no RFC compliant path to root found when trying to validate chain")
+}
+
+func chainsEquivalent(inChain []*x509.Certificate, verifiedChain []*x509.Certificate) bool {
+	// The verified chain includes a root, but the input chain may or may not include a
+	// root (RFC 6962 s4.1/ s4.2 "the last [certificate] is either the root certificate
+	// or a certificate that chains to a known root certificate").
+	if len(inChain) != len(verifiedChain) && len(inChain) != (len(verifiedChain)-1) {
+		return false
+	}
+
+	for i, certInChain := range inChain {
+		if !certInChain.Equal(verifiedChain[i]) {
+			return false
+		}
+	}
+	return true
 }

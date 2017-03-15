@@ -17,84 +17,63 @@ package crypto
 import (
 	"crypto"
 	"crypto/rand"
-	"encoding/base64"
-	"fmt"
-	"strconv"
+	"encoding/json"
 
 	"github.com/benlaurie/objecthash/go/objecthash"
-	"github.com/golang/glog"
-	"github.com/google/trillian"
+	"github.com/google/trillian/crypto/keys"
+	"github.com/google/trillian/crypto/sigpb"
 )
 
-// Constants used as map keys when building input for ObjectHash. They must not be changed
-// as this will change the output of hashRoot()
-const (
-	mapKeyRootHash       string = "RootHash"
-	mapKeyTimestampNanos string = "TimestampNanos"
-	mapKeyTreeSize       string = "TreeSize"
-)
+var sigpbHashLookup = map[crypto.Hash]sigpb.DigitallySigned_HashAlgorithm{
+	crypto.SHA256: sigpb.DigitallySigned_SHA256,
+}
 
 // Signer is responsible for signing log-related data and producing the appropriate
 // application specific signature objects.
 type Signer struct {
-	hasher       Hasher
-	signer       crypto.Signer
-	sigAlgorithm trillian.SignatureAlgorithm
+	hash   crypto.Hash
+	signer crypto.Signer
 }
 
 // NewSigner creates a new Signer wrapping up a hasher and a signer. For the moment
 // we only support SHA256 hashing and either ECDSA or RSA signing but this is not enforced
 // here.
-func NewSigner(hasher Hasher, signatureAlgorithm trillian.SignatureAlgorithm, signer crypto.Signer) *Signer {
-	return &Signer{hasher, signer, signatureAlgorithm}
+func NewSigner(signer crypto.Signer) *Signer {
+	return &Signer{
+		hash:   crypto.SHA256,
+		signer: signer,
+	}
+}
+
+// Public returns the public key that can verify signatures produced by s.
+func (s *Signer) Public() crypto.PublicKey {
+	return s.signer.Public()
 }
 
 // Sign obtains a signature after first hashing the input data.
-func (s Signer) Sign(data []byte) (trillian.DigitallySigned, error) {
-	digest := s.hasher.Digest(data)
+func (s *Signer) Sign(data []byte) (*sigpb.DigitallySigned, error) {
+	h := s.hash.New()
+	h.Write(data)
+	digest := h.Sum(nil)
 
-	if len(digest) != s.hasher.Size() {
-		return trillian.DigitallySigned{}, fmt.Errorf("hasher returned unexpected digest length: %d, %d",
-			len(digest), s.hasher.Size())
-	}
-
-	sig, err := s.signer.Sign(rand.Reader, digest, s.hasher)
-
+	sig, err := s.signer.Sign(rand.Reader, digest, s.hash)
 	if err != nil {
-		return trillian.DigitallySigned{}, err
+		return nil, err
 	}
 
-	return trillian.DigitallySigned{
-		SignatureAlgorithm: s.sigAlgorithm,
-		HashAlgorithm:      s.hasher.HashAlgorithm(),
-		Signature:          sig}, nil
+	return &sigpb.DigitallySigned{
+		SignatureAlgorithm: keys.SignatureAlgorithm(s.Public()),
+		HashAlgorithm:      sigpbHashLookup[s.hash],
+		Signature:          sig,
+	}, nil
 }
 
-func (s Signer) hashRoot(root trillian.SignedLogRoot) []byte {
-	rootMap := make(map[string]interface{})
-
-	// Pull out the fields we want to hash. Caution: use string format for int64 values as they
-	// can overflow when JSON encoded otherwise (it uses floats). We want to be sure that people
-	// using JSON to verify hashes can build the exact same input to ObjectHash.
-	rootMap[mapKeyRootHash] = base64.StdEncoding.EncodeToString(root.RootHash)
-	rootMap[mapKeyTimestampNanos] = strconv.FormatInt(root.TimestampNanos, 10)
-	rootMap[mapKeyTreeSize] = strconv.FormatInt(root.TreeSize, 10)
-
-	hash := objecthash.ObjectHash(rootMap)
-
-	return hash[:]
-}
-
-// SignLogRoot updates a log root to include a signature from the crypto signer this object
-// was created with. Signatures use objecthash on a fixed JSON format of the root.
-func (s Signer) SignLogRoot(root trillian.SignedLogRoot) (trillian.DigitallySigned, error) {
-	objectHash := s.hashRoot(root)
-	signature, err := s.Sign(objectHash[:])
-
+// SignObject signs the requested object using ObjectHash.
+func (s *Signer) SignObject(obj interface{}) (*sigpb.DigitallySigned, error) {
+	j, err := json.Marshal(obj)
 	if err != nil {
-		glog.Warningf("Signer failed to sign root: %v", err)
-		return trillian.DigitallySigned{}, err
+		return nil, err
 	}
-
-	return signature, nil
+	hash := objecthash.CommonJSONHash(string(j))
+	return s.Sign(hash[:])
 }

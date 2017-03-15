@@ -1,13 +1,27 @@
+// Copyright 2017 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package testonly
 
 import (
+	"bytes"
 	"fmt"
 
-	"encoding/hex"
 	"github.com/golang/glog"
-	"github.com/google/trillian/crypto"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/storage"
+	"github.com/google/trillian/testonly"
 )
 
 // This is a fake implementation of a NodeReader intended for use in testing Merkle path code.
@@ -98,7 +112,7 @@ type MultiFakeNodeReader struct {
 type LeafBatch struct {
 	TreeRevision int64
 	Leaves       []string
-	ExpectedRoot string
+	ExpectedRoot []byte
 }
 
 // NewMultiFakeNodeReader creates a MultiFakeNodeReader delegating to a number of FakeNodeReaders
@@ -113,7 +127,7 @@ func NewMultiFakeNodeReader(readers []FakeNodeReader) *MultiFakeNodeReader {
 // code. To help guard against this we check the tree root hash after each batch has been
 // processed. The supplied batches should be in ascending order of tree revision.
 func NewMultiFakeNodeReaderFromLeaves(batches []LeafBatch) *MultiFakeNodeReader {
-	tree := merkle.NewCompactMerkleTree(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
+	tree := merkle.NewCompactMerkleTree(testonly.Hasher)
 	readers := make([]FakeNodeReader, 0, len(batches))
 
 	lastBatchRevision := int64(0)
@@ -140,8 +154,8 @@ func NewMultiFakeNodeReaderFromLeaves(batches []LeafBatch) *MultiFakeNodeReader 
 		}
 
 		// Sanity check the tree root hash against the one we expect to see.
-		if got, want := hex.EncodeToString(tree.CurrentRoot()), batch.ExpectedRoot; got != want {
-			panic(fmt.Errorf("NewMultiFakeNodeReaderFromLeaves() got root: %s, want: %s (%v)", got, want, batch))
+		if got, want := tree.CurrentRoot(), batch.ExpectedRoot; !bytes.Equal(got, want) {
+			panic(fmt.Errorf("NewMultiFakeNodeReaderFromLeaves() got root: %x, want: %x (%v)", got, want, batch))
 		}
 
 		// Unroll the update map to []NodeMappings to retain the most recent node update within

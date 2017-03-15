@@ -26,8 +26,8 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto"
 	"github.com/google/trillian/merkle"
+	"github.com/google/trillian/testonly"
 )
 
 // TestParameters bundles up all the settings for a test run
@@ -180,7 +180,7 @@ func RunLogIntegration(client trillian.TrillianLogClient, params TestParameters)
 }
 
 func queueLeaves(client trillian.TrillianLogClient, params TestParameters) error {
-	leaves := []trillian.LogLeaf{}
+	leaves := []*trillian.LogLeaf{}
 
 	for l := int64(0); l < params.leafCount; l++ {
 		// Leaf data based on the sequence number so we can check the hashes
@@ -189,8 +189,9 @@ func queueLeaves(client trillian.TrillianLogClient, params TestParameters) error
 		data := []byte(fmt.Sprintf("Leaf %d", leafNumber))
 		idHash := sha256.Sum256(data)
 
-		leaf := trillian.LogLeaf{
+		leaf := &trillian.LogLeaf{
 			LeafIdentityHash: idHash[:],
+			MerkleLeafHash:   testonly.Hasher.HashLeaf(data),
 			LeafValue:        data,
 			ExtraData:        []byte(fmt.Sprintf("Extra %d", leafNumber)),
 		}
@@ -199,9 +200,11 @@ func queueLeaves(client trillian.TrillianLogClient, params TestParameters) error
 		if len(leaves) >= params.queueBatchSize || (l+1) == params.leafCount {
 			glog.Infof("Queueing %d leaves ...", len(leaves))
 
-			req := makeQueueLeavesRequest(params.treeID, leaves)
 			ctx, cancel := getRPCDeadlineContext(params)
-			_, err := client.QueueLeaves(ctx, &req)
+			_, err := client.QueueLeaves(ctx, &trillian.QueueLeavesRequest{
+				LogId:  params.treeID,
+				Leaves: leaves,
+			})
 			cancel()
 
 			if err != nil {
@@ -256,8 +259,6 @@ func readbackLogEntries(logID int64, client trillian.TrillianLogClient, params T
 	}
 
 	for currentLeaf < params.leafCount {
-		hasher := merkle.NewRFC6962TreeHasher(crypto.NewSHA256())
-
 		// We have to allow for the last batch potentially being a short one
 		numLeaves := params.leafCount - currentLeaf
 
@@ -301,7 +302,7 @@ func readbackLogEntries(logID int64, client trillian.TrillianLogClient, params T
 
 			delete(leafDataPresenceMap, string(leaf.LeafValue))
 
-			hash := hasher.HashLeaf(leaf.LeafValue)
+			hash := testonly.Hasher.HashLeaf(leaf.LeafValue)
 
 			if got, want := hex.EncodeToString(hash), hex.EncodeToString(leaf.MerkleLeafHash); got != want {
 				return nil, fmt.Errorf("leaf %d hash mismatch expected got: %s want: %s", leaf.LeafIndex, got, want)
@@ -378,7 +379,11 @@ func checkInclusionProofTreeSizeOutOfRange(logID int64, client trillian.Trillian
 func checkInclusionProofsAtIndex(index int64, logID int64, tree *merkle.InMemoryMerkleTree, client trillian.TrillianLogClient, params TestParameters) error {
 	for treeSize := int64(0); treeSize < min(params.leafCount, int64(2*params.sequencerBatchSize)); treeSize++ {
 		ctx, cancel := getRPCDeadlineContext(params)
-		resp, err := client.GetInclusionProof(ctx, &trillian.GetInclusionProofRequest{LogId: logID, LeafIndex: index, TreeSize: int64(treeSize)})
+		resp, err := client.GetInclusionProof(ctx, &trillian.GetInclusionProofRequest{
+			LogId:     logID,
+			LeafIndex: index,
+			TreeSize:  int64(treeSize),
+		})
 		cancel()
 
 		// If the index is larger than the tree size we cannot have a valid proof
@@ -431,17 +436,6 @@ func checkConsistencyProof(consistParams consistencyProofParams, treeID int64, t
 	return compareLogAndTreeProof(resp.Proof, proof)
 }
 
-func makeQueueLeavesRequest(logID int64, leaves []trillian.LogLeaf) trillian.QueueLeavesRequest {
-	leafProtos := make([]*trillian.LogLeaf, 0, len(leaves))
-
-	for _, leaf := range leaves {
-		leaf := leaf
-		leafProtos = append(leafProtos, &leaf)
-	}
-
-	return trillian.QueueLeavesRequest{LogId: logID, Leaves: leafProtos}
-}
-
 func makeGetLeavesByIndexRequest(logID int64, startLeaf, numLeaves int64) *trillian.GetLeavesByIndexRequest {
 	leafIndices := make([]int64, 0, numLeaves)
 
@@ -455,8 +449,8 @@ func makeGetLeavesByIndexRequest(logID int64, startLeaf, numLeaves int64) *trill
 func buildMemoryMerkleTree(leafMap map[int64]*trillian.LogLeaf, params TestParameters) *merkle.InMemoryMerkleTree {
 	// Build the same tree with two different Merkle implementations as an additional check. We don't
 	// just rely on the compact tree as the server uses the same code so bugs could be masked
-	compactTree := merkle.NewCompactMerkleTree(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
-	merkleTree := merkle.NewInMemoryMerkleTree(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
+	compactTree := merkle.NewCompactMerkleTree(testonly.Hasher)
+	merkleTree := merkle.NewInMemoryMerkleTree(testonly.Hasher)
 
 	// We use the leafMap as we need to use the same order for the memory tree to get the same hash.
 	for l := params.startLeaf; l < params.leafCount; l++ {

@@ -1,4 +1,4 @@
-// Copyright 2016 Google Inc. All Rights Reserved.
+// Copyright 2017 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,41 +19,57 @@ import (
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"encoding/asn1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 
-	"github.com/google/trillian"
+	"github.com/benlaurie/objecthash/go/objecthash"
+	"github.com/google/trillian/crypto/keys"
+	"github.com/google/trillian/crypto/sigpb"
 )
 
-// ErrVerify occurs whenever signature verification fails.
-var ErrVerify = errors.New("signature verification failed")
+var (
+	errVerify = errors.New("signature verification failed")
 
-// Verify cryptographically verifies the output of Signer.
-func Verify(pub crypto.PublicKey, data []byte, sig trillian.DigitallySigned) error {
-	sigAlgo := sig.SignatureAlgorithm
+	cryptoHashLookup = map[sigpb.DigitallySigned_HashAlgorithm]crypto.Hash{
+		sigpb.DigitallySigned_SHA256: crypto.SHA256,
+	}
+)
 
-	// Recompute digest
-	hasher, err := NewHasher(sig.HashAlgorithm)
+// VerifyObject verifies the output of Signer.SignObject.
+func VerifyObject(pub crypto.PublicKey, obj interface{}, sig *sigpb.DigitallySigned) error {
+	j, err := json.Marshal(obj)
 	if err != nil {
 		return err
 	}
-	digest := hasher.Digest(data)
+	hash := objecthash.CommonJSONHash(string(j))
 
-	// Verify signature algo type
-	switch key := pub.(type) {
+	return Verify(pub, hash[:], sig)
+}
+
+// Verify cryptographically verifies the output of Signer.
+func Verify(pub crypto.PublicKey, data []byte, sig *sigpb.DigitallySigned) error {
+	if keys.SignatureAlgorithm(pub) != sig.SignatureAlgorithm {
+		return fmt.Errorf("signature algorithm does not match public key")
+	}
+
+	// Recompute digest
+	hasher, ok := cryptoHashLookup[sig.HashAlgorithm]
+	if !ok {
+		return fmt.Errorf("unsupported hash algorithm %v", hasher)
+	}
+	h := hasher.New()
+	h.Write(data)
+	digest := h.Sum(nil)
+
+	switch pub := pub.(type) {
 	case *ecdsa.PublicKey:
-		if sigAlgo != trillian.SignatureAlgorithm_ECDSA {
-			return fmt.Errorf("signature algorithm does not match public key")
-		}
-		return verifyECDSA(key, digest, sig.Signature)
+		return verifyECDSA(pub, digest, sig.Signature)
 	case *rsa.PublicKey:
-		if sigAlgo != trillian.SignatureAlgorithm_RSA {
-			return fmt.Errorf("signature algorithm does not match public key")
-		}
-		return verifyRSA(key, digest, sig.Signature, hasher.Hash, hasher)
+		return verifyRSA(pub, digest, sig.Signature, hasher, hasher)
 	default:
-		return fmt.Errorf("unknown private key type: %T", key)
+		return fmt.Errorf("unknown private key type: %T", pub)
 	}
 }
 
@@ -70,14 +86,14 @@ func verifyECDSA(pub *ecdsa.PublicKey, hashed, sig []byte) error {
 	}
 	rest, err := asn1.Unmarshal(sig, &ecdsaSig)
 	if err != nil {
-		return ErrVerify
+		return errVerify
 	}
 	if len(rest) != 0 {
-		return ErrVerify
+		return errVerify
 	}
 
 	if !ecdsa.Verify(pub, hashed, ecdsaSig.R, ecdsaSig.S) {
-		return ErrVerify
+		return errVerify
 	}
 	return nil
 

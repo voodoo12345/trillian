@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package mysql
 
 import (
@@ -7,7 +21,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto"
+	spb "github.com/google/trillian/crypto/sigpb"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
@@ -43,53 +57,98 @@ type mySQLMapStorage struct {
 }
 
 // NewMapStorage creates a mySQLMapStorage instance for the specified MySQL URL.
-func NewMapStorage(db *sql.DB) (storage.MapStorage, error) {
+func NewMapStorage(db *sql.DB) storage.MapStorage {
 	return &mySQLMapStorage{
 		mySQLTreeStorage: newTreeStorage(db),
-	}, nil
+	}
 }
 
-func (m *mySQLMapStorage) Begin(ctx context.Context, treeID int64) (storage.MapTX, error) {
-	// TODO(codingllama): Validate treeType, read hash algorithm from storage
-	th := merkle.NewRFC6962TreeHasher(crypto.NewSHA256())
+func (m *mySQLMapStorage) CheckDatabaseAccessible(ctx context.Context) error {
+	return checkDatabaseAccessible(ctx, m.db)
+}
 
-	ttx, err := m.beginTreeTx(ctx, treeID, th.Size(), defaultMapStrata, cache.PopulateMapSubtreeNodes(th), cache.PrepareMapSubtreeWrite())
+type readOnlyMapTX struct {
+	tx *sql.Tx
+}
+
+func (m *mySQLMapStorage) Snapshot(ctx context.Context) (storage.ReadOnlyMapTX, error) {
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	return &readOnlyMapTX{tx}, nil
+}
+
+func (t *readOnlyMapTX) Commit() error {
+	return t.tx.Commit()
+}
+
+func (t *readOnlyMapTX) Rollback() error {
+	return t.tx.Rollback()
+}
+
+func (t *readOnlyMapTX) Close() error {
+	if err := t.Rollback(); err != nil && err != sql.ErrTxDone {
+		glog.Warningf("Rollback error on Close(): %v", err)
+		return err
+	}
+	return nil
+}
+
+func (m *mySQLMapStorage) hasher(treeID int64) (merkle.TreeHasher, error) {
+	// TODO: read hash algorithm from storage.
+	return merkle.Factory(merkle.RFC6962SHA256Type)
+}
+
+func (m *mySQLMapStorage) BeginForTree(ctx context.Context, treeID int64) (storage.MapTreeTX, error) {
+	// TODO(codingllama): Validate treeType, read hash algorithm from storage
+	hasher, err := m.hasher(treeID)
 	if err != nil {
 		return nil, err
 	}
 
-	mtx := &mapTX{
+	ttx, err := m.beginTreeTx(ctx, treeID, hasher.Size(), defaultMapStrata, cache.PopulateMapSubtreeNodes(hasher), cache.PrepareMapSubtreeWrite())
+	if err != nil {
+		return nil, err
+	}
+
+	mtx := &mapTreeTX{
 		treeTX: ttx,
 		ms:     m,
 	}
 
-	root, err := mtx.LatestSignedMapRoot()
+	mtx.root, err = mtx.LatestSignedMapRoot()
 	if err != nil {
 		return nil, err
 	}
-	mtx.treeTX.writeRevision = root.MapRevision + 1
+	mtx.treeTX.writeRevision = mtx.root.MapRevision + 1
 
 	return mtx, nil
 }
 
-func (m *mySQLMapStorage) Snapshot(ctx context.Context, treeID int64) (storage.ReadOnlyMapTX, error) {
-	tx, err := m.Begin(ctx, treeID)
+func (m *mySQLMapStorage) SnapshotForTree(ctx context.Context, treeID int64) (storage.ReadOnlyMapTreeTX, error) {
+	tx, err := m.BeginForTree(ctx, treeID)
 	if err != nil {
 		return nil, err
 	}
-	return tx.(storage.ReadOnlyMapTX), nil
+	return tx.(storage.ReadOnlyMapTreeTX), nil
 }
 
-type mapTX struct {
+type mapTreeTX struct {
 	treeTX
-	ms *mySQLMapStorage
+	ms   *mySQLMapStorage
+	root trillian.SignedMapRoot
 }
 
-func (m *mapTX) WriteRevision() int64 {
+func (m *mapTreeTX) ReadRevision() int64 {
+	return m.root.MapRevision
+}
+
+func (m *mapTreeTX) WriteRevision() int64 {
 	return m.treeTX.writeRevision
 }
 
-func (m *mapTX) Set(keyHash []byte, value trillian.MapLeaf) error {
+func (m *mapTreeTX) Set(keyHash []byte, value trillian.MapLeaf) error {
 	// TODO(al): consider storing some sort of value which represents the group of keys being set in this Tx.
 	//           That way, if this attempt partially fails (i.e. because some subset of the in-the-future Merkle
 	//           nodes do get written), we can enforce that future map update attempts are a complete replay of
@@ -111,7 +170,7 @@ func (m *mapTX) Set(keyHash []byte, value trillian.MapLeaf) error {
 
 // MapLeaf indexes are overwritten rather than returning the MapLeaf proto provided in Set.
 // TODO: return a map[_something_]Mapleaf or []IndexValue to separate the index from the value.
-func (m *mapTX) Get(revision int64, indexes [][]byte) ([]trillian.MapLeaf, error) {
+func (m *mapTreeTX) Get(revision int64, indexes [][]byte) ([]trillian.MapLeaf, error) {
 	stmt, err := m.ms.getStmt(selectMapLeafSQL, len(indexes), "?", "?")
 	if err != nil {
 		return nil, err
@@ -164,10 +223,10 @@ func (m *mapTX) Get(revision int64, indexes [][]byte) ([]trillian.MapLeaf, error
 	return ret, nil
 }
 
-func (m *mapTX) LatestSignedMapRoot() (trillian.SignedMapRoot, error) {
+func (m *mapTreeTX) LatestSignedMapRoot() (trillian.SignedMapRoot, error) {
 	var timestamp, mapRevision int64
 	var rootHash, rootSignatureBytes []byte
-	var rootSignature trillian.DigitallySigned
+	var rootSignature spb.DigitallySigned
 	var mapperMetaBytes []byte
 	var mapperMeta *trillian.MapperMetadata
 
@@ -211,7 +270,7 @@ func (m *mapTX) LatestSignedMapRoot() (trillian.SignedMapRoot, error) {
 	return ret, nil
 }
 
-func (m *mapTX) StoreSignedMapRoot(root trillian.SignedMapRoot) error {
+func (m *mapTreeTX) StoreSignedMapRoot(root trillian.SignedMapRoot) error {
 	signatureBytes, err := proto.Marshal(root.Signature)
 	if err != nil {
 		glog.Warningf("Failed to marshal root signature: %v %v", root.Signature, err)

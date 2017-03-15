@@ -1,3 +1,17 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package ct
 
 import (
@@ -10,24 +24,18 @@ import (
 	"github.com/google/certificate-transparency/go/tls"
 	"github.com/google/certificate-transparency/go/x509"
 	"github.com/google/trillian/crypto"
+	"github.com/google/trillian/crypto/keys"
 )
 
 // signV1TreeHead signs a tree head for CT. The input STH should have been built from a
 // backend response and already checked for validity.
-func signV1TreeHead(km crypto.KeyManager, sth *ct.SignedTreeHead) error {
-	signer, err := km.Signer()
-	if err != nil {
-		return err
-	}
-
+func signV1TreeHead(signer *crypto.Signer, sth *ct.SignedTreeHead) error {
 	sthBytes, err := ct.SerializeSTHSignatureInput(*sth)
 	if err != nil {
 		return err
 	}
 
-	trillianSigner := crypto.NewSigner(crypto.NewSHA256(), km.SignatureAlgorithm(), signer)
-
-	signature, err := trillianSigner.Sign(sthBytes)
+	signature, err := signer.Sign(sthBytes)
 	if err != nil {
 		return err
 	}
@@ -36,17 +44,16 @@ func signV1TreeHead(km crypto.KeyManager, sth *ct.SignedTreeHead) error {
 		Algorithm: tls.SignatureAndHashAlgorithm{
 			Hash: tls.SHA256,
 			// This relies on the protobuf enum values matching the TLS-defined values.
-			Signature: tls.SignatureAlgorithm(km.SignatureAlgorithm()),
+			Signature: tls.SignatureAlgorithm(keys.SignatureAlgorithm(signer.Public())),
 		},
 		Signature: signature.Signature,
 	}
-
 	return nil
 }
 
 // signV1SCTForCertificate creates a MerkleTreeLeaf and builds and signs a V1 CT SCT for a certificate
 // using the key held by a key manager.
-func signV1SCTForCertificate(km crypto.KeyManager, cert, issuer *x509.Certificate, t time.Time) (ct.MerkleTreeLeaf, ct.SignedCertificateTimestamp, error) {
+func signV1SCTForCertificate(signer *crypto.Signer, cert, issuer *x509.Certificate, t time.Time) (*ct.MerkleTreeLeaf, *ct.SignedCertificateTimestamp, error) {
 	// Temp SCT for input to the serializer
 	sctInput := getSCTForSignatureInput(t)
 
@@ -61,15 +68,15 @@ func signV1SCTForCertificate(km crypto.KeyManager, cert, issuer *x509.Certificat
 		},
 	}
 
-	return serializeAndSignSCT(km, leaf, sctInput, t)
+	return serializeAndSignSCT(signer, leaf, sctInput, t)
 }
 
 // signV1SCTForPrecertificate builds and signs a V1 CT SCT for a pre-certificate using the key
 // held by a key manager.
-func signV1SCTForPrecertificate(km crypto.KeyManager, cert, issuer *x509.Certificate, t time.Time) (ct.MerkleTreeLeaf, ct.SignedCertificateTimestamp, error) {
+func signV1SCTForPrecertificate(signer *crypto.Signer, cert, issuer *x509.Certificate, t time.Time) (*ct.MerkleTreeLeaf, *ct.SignedCertificateTimestamp, error) {
 	if issuer == nil {
 		// Need issuer for the IssuerKeyHash
-		return ct.MerkleTreeLeaf{}, ct.SignedCertificateTimestamp{}, errors.New("no issuer available for pre-certificate")
+		return nil, nil, errors.New("no issuer available for pre-certificate")
 	}
 	// Temp SCT for input to the serializer
 	sctInput := getSCTForSignatureInput(t)
@@ -81,7 +88,7 @@ func signV1SCTForPrecertificate(km crypto.KeyManager, cert, issuer *x509.Certifi
 	keyHash := sha256.Sum256(issuer.RawSubjectPublicKeyInfo)
 	defangedTBS, err := x509.RemoveCTPoison(cert.RawTBSCertificate)
 	if err != nil {
-		return ct.MerkleTreeLeaf{}, ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to remove poison extension: %v", err)
+		return nil, nil, fmt.Errorf("failed to remove poison extension: %v", err)
 	}
 	precert := ct.PreCert{
 		IssuerKeyHash:  keyHash,
@@ -99,53 +106,46 @@ func signV1SCTForPrecertificate(km crypto.KeyManager, cert, issuer *x509.Certifi
 		TimestampedEntry: &timestampedEntry,
 	}
 
-	return serializeAndSignSCT(km, leaf, sctInput, t)
+	return serializeAndSignSCT(signer, leaf, sctInput, t)
 }
 
-func serializeAndSignSCT(km crypto.KeyManager, leaf ct.MerkleTreeLeaf, sctInput ct.SignedCertificateTimestamp, t time.Time) (ct.MerkleTreeLeaf, ct.SignedCertificateTimestamp, error) {
+func serializeAndSignSCT(signer *crypto.Signer, leaf ct.MerkleTreeLeaf, sctInput ct.SignedCertificateTimestamp, t time.Time) (*ct.MerkleTreeLeaf, *ct.SignedCertificateTimestamp, error) {
 	// Serialize SCT signature input to get the bytes that need to be signed
 	res, err := ct.SerializeSCTSignatureInput(sctInput, ct.LogEntry{Leaf: leaf})
 	if err != nil {
-		return ct.MerkleTreeLeaf{}, ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to serialize SCT data: %v", err)
+		return nil, nil, fmt.Errorf("failed to serialize SCT data: %v", err)
 	}
 
 	// Create a complete SCT including signature
-	sct, err := signSCT(km, t, res)
+	sct, err := signSCT(signer, t, res)
 	if err != nil {
-		return ct.MerkleTreeLeaf{}, ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to sign SCT data: %v", err)
+		return nil, nil, fmt.Errorf("failed to sign SCT data: %v", err)
 	}
 
-	return leaf, sct, nil
+	return &leaf, sct, nil
 }
 
-func signSCT(km crypto.KeyManager, t time.Time, sctData []byte) (ct.SignedCertificateTimestamp, error) {
-	signer, err := km.Signer()
+func signSCT(signer *crypto.Signer, t time.Time, sctData []byte) (*ct.SignedCertificateTimestamp, error) {
+	signature, err := signer.Sign(sctData)
 	if err != nil {
-		return ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to retrieve signer: %v", err)
-	}
-
-	trillianSigner := crypto.NewSigner(crypto.NewSHA256(), km.SignatureAlgorithm(), signer)
-
-	signature, err := trillianSigner.Sign(sctData)
-	if err != nil {
-		return ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to sign data: %v", err)
+		return nil, fmt.Errorf("failed to sign data: %v", err)
 	}
 
 	digitallySigned := ct.DigitallySigned{
 		Algorithm: tls.SignatureAndHashAlgorithm{
 			Hash: tls.SHA256,
 			// This relies on the protobuf enum values matching the TLS-defined values.
-			Signature: tls.SignatureAlgorithm(km.SignatureAlgorithm()),
+			Signature: tls.SignatureAlgorithm(keys.SignatureAlgorithm(signer.Public())),
 		},
 		Signature: signature.Signature,
 	}
 
-	logID, err := GetCTLogID(km)
+	logID, err := GetCTLogID(signer.Public())
 	if err != nil {
-		return ct.SignedCertificateTimestamp{}, fmt.Errorf("failed to get logID: %v", err)
+		return nil, fmt.Errorf("failed to get logID: %v", err)
 	}
 
-	return ct.SignedCertificateTimestamp{
+	return &ct.SignedCertificateTimestamp{
 		SCTVersion: ct.V1,
 		LogID:      ct.LogID{KeyID: logID},
 		Timestamp:  uint64(t.UnixNano() / millisPerNano), // spec uses millisecond timestamps

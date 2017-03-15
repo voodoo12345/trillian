@@ -1,3 +1,17 @@
+// Copyright 2017 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server
 
 import (
@@ -7,10 +21,10 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/google/trillian"
-	"github.com/google/trillian/crypto"
 	"github.com/google/trillian/merkle"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/testonly"
+	trillian_testonly "github.com/google/trillian/testonly"
 )
 
 // rehashTest encapsulates one test case for the rehasher in isolation. Input data like the storage
@@ -131,7 +145,7 @@ func TestTree813FetchAll(t *testing.T) {
 
 	mt := treeAtSize(int(ts))
 	r := testonly.NewMultiFakeNodeReaderFromLeaves([]testonly.LeafBatch{
-		{TreeRevision: testTreeRevision, Leaves: expandLeaves(0, int(ts - 1)), ExpectedRoot: expectedRootAtSize(mt)},
+		{TreeRevision: testTreeRevision, Leaves: expandLeaves(0, int(ts-1)), ExpectedRoot: expectedRootAtSize(mt)},
 	})
 
 	for l := int64(271); l < ts; l++ {
@@ -147,7 +161,7 @@ func TestTree813FetchAll(t *testing.T) {
 		}
 
 		// We use +1 here because of the 1 based leaf indexing of this implementation
-		refProof := mt.PathToRootAtSnapshot(l + 1, ts)
+		refProof := mt.PathToRootAtSnapshot(l+1, ts)
 
 		if got, want := len(proof.ProofNode), len(refProof); got != want {
 			for i, f := range fetches {
@@ -292,13 +306,13 @@ func expandLeaves(n, m int) []string {
 
 // expectedRootAtSize uses the in memory tree, the tree built with Compact Merkle Tree should
 // have the same root.
-func expectedRootAtSize(mt *merkle.InMemoryMerkleTree) string {
-	return hex.EncodeToString(mt.CurrentRoot().Hash())
+func expectedRootAtSize(mt *merkle.InMemoryMerkleTree) []byte {
+	return mt.CurrentRoot().Hash()
 }
 
 func treeAtSize(n int) *merkle.InMemoryMerkleTree {
 	leaves := expandLeaves(0, n-1)
-	mt := merkle.NewInMemoryMerkleTree(merkle.NewRFC6962TreeHasher(crypto.NewSHA256()))
+	mt := merkle.NewInMemoryMerkleTree(trillian_testonly.Hasher)
 	for _, leaf := range leaves {
 		mt.AddLeaf([]byte(leaf))
 	}

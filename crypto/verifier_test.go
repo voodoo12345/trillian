@@ -1,4 +1,4 @@
-// Copyright 2016 Google Inc. All Rights Reserved.
+// Copyright 2017 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,10 @@
 package crypto
 
 import (
+	"crypto"
 	"testing"
 
-	"github.com/google/trillian"
+	"github.com/google/trillian/crypto/keys"
 	"github.com/google/trillian/testonly"
 )
 
@@ -34,44 +35,27 @@ func TestSignVerify(t *testing.T) {
 	for _, test := range []struct {
 		PEM      string
 		password string
-		HashAlgo trillian.HashAlgorithm
-		SigAlgo  trillian.SignatureAlgorithm
+		HashAlgo crypto.Hash
 	}{
-		{privPEM, "", trillian.HashAlgorithm_SHA256, trillian.SignatureAlgorithm_ECDSA},
-		{testonly.DemoPrivateKey, testonly.DemoPrivateKeyPass,
-			trillian.HashAlgorithm_SHA256, trillian.SignatureAlgorithm_ECDSA},
+		{privPEM, "", crypto.SHA256},
+		{testonly.DemoPrivateKey, testonly.DemoPrivateKeyPass, crypto.SHA256},
 	} {
 
-		km := NewPEMKeyManager()
-		if err := km.LoadPrivateKey(test.PEM, test.password); err != nil {
-			t.Errorf("LoadPrivateKey(_, %v)=%v, want nil", test.password, err)
-			continue
-		}
-		kmsigner, err := km.Signer()
+		key, err := keys.NewFromPrivatePEM(test.PEM, test.password)
 		if err != nil {
-			t.Errorf("Signer()=(_,%v), want (_,nil)", err)
+			t.Errorf("LoadPrivateKey(_, %q)=%v, want nil", test.password, err)
 			continue
 		}
-		hasher, err := NewHasher(test.HashAlgo)
-		if err != nil {
-			t.Errorf("NewHasher(%v)=(_,%v), want (_,nil)", test.HashAlgo, err)
-			continue
-		}
-		signer := NewSigner(hasher, test.SigAlgo, kmsigner)
 
 		// Sign and Verify.
 		msg := []byte("foo")
-		signed, err := signer.Sign(msg)
+		signed, err := NewSigner(key).Sign(msg)
 		if err != nil {
 			t.Errorf("Sign()=(_,%v), want (_,nil)", err)
 			continue
 		}
-		pub, err := km.GetPublicKey()
-		if err != nil {
-			t.Errorf("GetPublicKey()=(_,%v), want (_,nil)", err)
-			continue
-		}
-		if err := Verify(pub, msg, signed); err != nil {
+
+		if err := Verify(key.Public(), msg, signed); err != nil {
 			t.Errorf("Verify(,,)=%v, want nil", err)
 		}
 	}
